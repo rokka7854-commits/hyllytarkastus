@@ -40,6 +40,7 @@
     </section>
     <section class="card"><button id="saveObservation" class="primary" type="button" disabled>Tallenna havainto</button><p id="draftStatus" class="helper">Luonnos tallennetaan automaattisesti laitteelle</p></section>
     <section class="card"><div class="actions"><button id="listBtn" class="icon-action list" type="button"><b>☷</b>Havaintolista</button><button id="excelBtn" class="icon-action" type="button"><b>▦</b>Excel</button><button id="pdfBtn" class="icon-action" type="button"><b>PDF</b>PDF</button><button id="shareBtn" class="icon-action" type="button"><b>⇧</b>Jaa</button></div><div class="danger-zone"><button id="newInspection" class="danger" type="button">Aloita uusi tarkastus</button></div></section>
+    <section class="card" aria-label="Varmuuskopiointi"><div class="actions"><button id="backupBtn" class="icon-action" type="button"><b>⇩</b>Lataa varmuuskopio</button><button id="restoreBtn" class="icon-action" type="button"><b>↥</b>Palauta varmuuskopio</button></div><p class="helper">Varmuuskopio sisältää havainnot, luonnoksen ja kuvat.</p></section>
   </main>
 </div>
 
@@ -109,6 +110,50 @@
   // Mobiiliselaimissa suuri valokuva voi kaataa PDF:n, jos tavutaulukko kootaan yhdellä kertaa.
   function buildPdfSafe(){let objects=[],pages=[];const add=v=>{objects.push(v);return objects.length};const font=add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');const pagesRef=add(null);for(const o of state.observations){let imageRef=null,im='';if(o.photo){const raw=atob(o.photo.split(',')[1]),bytes=latin1(raw),sz=jpgSize(o.photo);imageRef=add({dict:'<< /Type /XObject /Subtype /Image /Width '+sz.w+' /Height '+sz.h+' /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length '+bytes.length+' >>',stream:bytes});im='/Im1 '+imageRef+' 0 R '}const lines=['Varastopaikka: '+o.location,'Vaurioitunut osa: '+o.part,'Taso/järjestysnumero: '+(o.level||'-'),'Luokitus: '+o.classification,'Vaurion tyyppi: '+(o.type||'-'),'Toimenpide: '+(o.action||'-'),'Lisätiedot: '+(o.notes||'-')];let content='BT /F1 18 Tf 42 805 Td (Hyllytarkastus) Tj ET\n';if(imageRef){content+='q 240 0 0 180 42 555 cm /Im1 Do Q\n'}else content+='BT /F1 11 Tf 42 635 Td (Ei kuvaa) Tj ET\n';content+='BT /F1 12 Tf 315 720 Td ';lines.forEach((l,i)=>{content+='('+pdfEscape(l).slice(0,78)+') Tj '+(i<lines.length-1?'0 -26 Td ':'')});content+=' ET';const cont=add({dict:'<< /Length '+latin1(content).length+' >>',stream:latin1(content)});const page=add('<< /Type /Page /Parent '+pagesRef+' 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 '+font+' 0 R >> /XObject << '+im+' >> >> /Contents '+cont+' 0 R >>');pages.push(page)}objects[pagesRef-1]='<< /Type /Pages /Kids ['+pages.map(x=>x+' 0 R').join(' ')+'] /Count '+pages.length+' >>';const catalog=add('<< /Type /Catalog /Pages '+pagesRef+' 0 R >>'),chunks=[],offsets=[0];let length=0;const push=data=>{const bytes=typeof data==='string'?latin1(data):data;chunks.push(bytes);length+=bytes.length};push('%PDF-1.4\n%âãÏÓ\n');objects.forEach((o,i)=>{offsets.push(length);push((i+1)+' 0 obj\n');if(typeof o==='string')push(o);else{push(o.dict+'\nstream\n');push(o.stream);push('\nendstream')}push('\nendobj\n')});const xref=length;push('xref\n0 '+(objects.length+1)+'\n0000000000 65535 f \n');for(let i=1;i<offsets.length;i++)push(String(offsets[i]).padStart(10,'0')+' 00000 n \n');push('trailer\n<< /Size '+(objects.length+1)+' /Root '+catalog+' 0 R >>\nstartxref\n'+xref+'\n%%EOF');return new Blob(chunks,{type:'application/pdf'})}
   buildPdf=buildPdfSafe;
+  const backupBtn = document.querySelector('#backupBtn');
+  const restoreBtn = document.querySelector('#restoreBtn');
+  const backupInput = document.createElement('input');
+  backupInput.type = 'file';
+  backupInput.accept = 'application/json,.json';
+  backupInput.hidden = true;
+  document.body.append(backupInput);
+
+  const backupFileName = () => `hyllytarkastus_varmuuskopio_${new Date().toISOString().slice(0, 10)}.json`;
+  const validPhoto = value => !value || (typeof value === 'string' && /^data:image\/(jpeg|png|webp);base64,/i.test(value));
+  function normalizedState(value) {
+    if (!value || typeof value !== 'object' || !Array.isArray(value.observations)) throw new Error('invalid-state');
+    const draft = value.draft && typeof value.draft === 'object' ? value.draft : {};
+    const observations = value.observations.filter(item => item && typeof item === 'object').map(item => ({ ...item, photo: validPhoto(item.photo) ? item.photo || '' : '' }));
+    return { draft: { ...emptyDraft(), ...draft, photo: validPhoto(draft.photo) ? draft.photo || '' : '' }, observations };
+  }
+
+  backupBtn.onclick = async () => {
+    clearTimeout(saveTimer);
+    await persist();
+    const data = { format: 'hyllytarkastus-varmuuskopio', version: 1, createdAt: new Date().toISOString(), state: structuredClone(state) };
+    download(new Blob([JSON.stringify(data)], { type: 'application/json;charset=utf-8' }), backupFileName());
+    toast('Varmuuskopio tallennetaan laitteen latauksiin');
+  };
+
+  restoreBtn.onclick = () => { backupInput.value = ''; backupInput.click(); };
+  backupInput.onchange = async () => {
+    const file = backupInput.files && backupInput.files[0];
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      if (data.format !== 'hyllytarkastus-varmuuskopio' || data.version !== 1) throw new Error('invalid-backup');
+      const restored = normalizedState(data.state);
+      if (!confirm('Palautetaanko varmuuskopio? Nykyinen tarkastus, havainnot ja luonnos korvataan tällä laitteella.')) return;
+      clearTimeout(saveTimer);
+      state = restored;
+      editId = null;
+      await persist();
+      render();
+      toast('Varmuuskopio palautettu paikallisesti');
+    } catch (error) {
+      toast('Varmuuskopion avaaminen ei onnistunut');
+    }
+  };
 })();
 </script>
 </body>

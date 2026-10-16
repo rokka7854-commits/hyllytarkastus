@@ -1,4 +1,4 @@
-const CACHE = 'hyllytarkastus-v2';
+const CACHE = 'hyllytarkastus-v3';
 const ASSETS = [
   './',
   './index.html',
